@@ -1,0 +1,115 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.34.4.
+--
+-- see: https://github.com/sol/hpack
+
+name:           barebones-webserver
+version:        0.1.0.0
+homepage:       https://github.com/Katrix/inf329-bareboneshttp-haskell#readme
+bug-reports:    https://github.com/Katrix/inf329-bareboneshttp-haskell/issues
+author:         Kathryn Frid
+maintainer:     Kathryn Frid
+copyright:      2022 Kathryn Frid
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+
+source-repository head
+  type: git
+  location: https://github.com/Katrix/inf329-bareboneshttp-haskell
+
+library
+  exposed-modules:
+      BareBonesHttp.Bidi
+      BareBonesHttp.Html
+      BareBonesHttp.Http
+      BareBonesHttp.Http.AsResponse
+      BareBonesHttp.Http.Capabilities
+      BareBonesHttp.Http.Definitions
+      BareBonesHttp.Http.Definitions.CoreDefinitions
+      BareBonesHttp.Http.Definitions.HttpStatus
+      BareBonesHttp.Http.Definitions.HttpUri
+      BareBonesHttp.Http.Internal.Connections
+      BareBonesHttp.Http.LogTimeSpent
+      BareBonesHttp.Http.RouteHandler
+      BareBonesHttp.Http.SecurityHeaders
+      BareBonesHttp.RunServer
+      BareBonesHttp.Uri
+      BareBonesHttp.Uri.Definitions
+      BareBonesHttp.Uri.Parsers
+      BareBonesHttp.Uri.PercentEncoding
+      Lib
+  other-modules:
+      Paths_barebones_webserver
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.7 && <5
+    , bytestring ==0.10.*
+    , case-insensitive ==1.2.*
+    , containers ==0.6.*
+    , lens ==5.*
+    , megaparsec ==9.*
+    , mtl ==2.*
+    , network ==3.1.*
+    , network-run ==0.2.*
+    , nonce ==1.*
+    , text ==1.2.*
+    , time >=1.9 && <2
+    , transformers ==0.5.*
+    , unliftio-core >=0.2.0 && <0.3
+  default-language: Haskell2010
+
+executable barebones-webserver-exe
+  main-is: Main.hs
+  other-modules:
+      Paths_barebones_webserver
+  hs-source-dirs:
+      app
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      barebones-webserver
+    , base >=4.7 && <5
+    , bytestring ==0.10.*
+    , case-insensitive ==1.2.*
+    , containers ==0.6.*
+    , lens ==5.*
+    , megaparsec ==9.*
+    , mtl ==2.*
+    , network ==3.1.*
+    , network-run ==0.2.*
+    , nonce ==1.*
+    , text ==1.2.*
+    , time >=1.9 && <2
+    , transformers ==0.5.*
+    , unliftio-core >=0.2.0 && <0.3
+  default-language: Haskell2010
+
+test-suite barebones-webserver-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_barebones_webserver
+  hs-source-dirs:
+      test
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      barebones-webserver
+    , base >=4.7 && <5
+    , bytestring ==0.10.*
+    , case-insensitive ==1.2.*
+    , containers ==0.6.*
+    , lens ==5.*
+    , megaparsec ==9.*
+    , mtl ==2.*
+    , network ==3.1.*
+    , network-run ==0.2.*
+    , nonce ==1.*
+    , text ==1.2.*
+    , time >=1.9 && <2
+    , transformers ==0.5.*
+    , unliftio-core >=0.2.0 && <0.3
+  default-language: Haskell2010

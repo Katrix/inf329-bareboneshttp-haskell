@@ -93,12 +93,13 @@ instance Show Host where
 
 -------------------- Port --------------------
 
-newtype Port = Port {_portNum :: Int} deriving (Eq)
+newtype Port = Port {_portNum :: Maybe Int} deriving (Eq)
 
 makeLenses ''Port
 
 instance Show Port where
-  show (Port i) = show i
+  show (Port (Just n)) = show n
+  show (Port Nothing) = ""
 
 -------------------- Authority --------------------
 

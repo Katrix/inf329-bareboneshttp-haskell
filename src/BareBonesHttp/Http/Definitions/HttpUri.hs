@@ -7,6 +7,8 @@ module BareBonesHttp.Http.Definitions.HttpUri
     readHttpUri,
     HttpAuthority (..),
     HttpPath (..),
+    Port(..),
+    Host(..),
   )
 where
 

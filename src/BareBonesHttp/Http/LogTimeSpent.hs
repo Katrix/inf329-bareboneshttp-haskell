@@ -14,10 +14,10 @@ import Data.Time
 
 newtype StartedProcessing = StartedProcessing {startedProcessingTime :: UTCTime}
 
-addContentSecurityPolicy ::
+logTimeSpent ::
   (MonadIO m, AddCap StartedProcessing ic1 ic2, HasCap StartedProcessing oc) =>
   Bidi (Kleisli m) (Request ic1) (Request ic2) (Response oc) (Response oc)
-addContentSecurityPolicy = Bidi (Kleisli setStartedTime) (Kleisli addHeaders)
+logTimeSpent = Bidi (Kleisli setStartedTime) (Kleisli addHeaders)
   where
     setStartedTime :: (MonadIO m, AddCap StartedProcessing ic1 ic2) => Request ic1 -> m (Request ic2)
     setStartedTime req = (\t -> over requestCap (addCap (StartedProcessing t)) req) <$> liftIO getCurrentTime

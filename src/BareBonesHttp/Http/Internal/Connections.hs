@@ -34,13 +34,23 @@ module BareBonesHttp.Http.Internal.Connections
 where
 
 import BareBonesHttp.Bidi
-import BareBonesHttp.Http.Definitions hiding (requestHeaders, requestMethod, requestUri, responseBody, responseHeaders, responseStatus)
+import BareBonesHttp.Http.Definitions hiding
+  ( requestHeaders,
+    requestMethod,
+    requestUri,
+    responseBody,
+    responseHeaders,
+    responseStatus,
+  )
 import qualified BareBonesHttp.Uri.Parsers as UriP
 import Control.Applicative (liftA2)
 import Control.Arrow
 import Control.Lens
+import Control.Monad (when)
 import Control.Monad.Error.Class
 import Control.Monad.IO.Class
+import Control.Monad.IO.Unlift
+import Control.Monad.Logger
 import Control.Monad.Reader.Class
 import Control.Monad.State.Class
 import Control.Monad.Trans.Class
@@ -62,6 +72,7 @@ import Network.Socket.ByteString
 import Numeric
 import qualified Text.Megaparsec as P
 import qualified Text.Megaparsec.Char as P
+import UnliftIO.Exception hiding (fromEither)
 
 -------------------- Misc utils --------------------
 
@@ -72,7 +83,7 @@ whileM cond ma = loopAcc []
       a <- ma
       if cond a
         then loopAcc $ a : acc
-        else pure $ a : acc
+        else pure (reverse (a : acc))
 
 fromEither :: Either a a -> a
 fromEither (Left a) = a
@@ -101,7 +112,11 @@ freshConnectionState leftoverBytes = ConnectionState leftoverBytes False Nothing
 
 -------------------- Requests and responses --------------------
 
-data Header = Header {_headerName :: CI.CI T.Text, _headerContent :: T.Text} deriving (Eq)
+data Header = Header
+  { _headerName :: CI.CI T.Text,
+    _headerContent :: T.Text
+  }
+  deriving (Eq)
 
 makeLenses ''Header
 
@@ -134,7 +149,9 @@ makeLenses ''ResponseInfo
 
 instance Show ResponseInfo where
   show (ResponseInfo protocol status headers body) =
-    "HTTP/" ++ show protocol ++ " " ++ show status ++ concatMap (\h -> show h ++ "\r\n") headers ++ "\r\n"
+    "HTTP/" ++ show protocol ++ " " ++ show status
+      ++ concatMap (\h -> show h ++ "\r\n") headers
+      ++ "\r\n"
       ++ maybe "" (T.unpack . TE.decodeUtf8) body
 
 responseToBytes :: (Arrow a) => a ResponseInfo [B.ByteString]
@@ -148,76 +165,138 @@ responseToBytes =
 
 -------------------- Read data --------------------
 
-readMoreN :: (MonadIO m, MonadReader Socket m, MonadState ConnectionState m) => Int -> m Int
+readMoreN ::
+  ( MonadIO m,
+    MonadReader Socket m,
+    MonadState ConnectionState m,
+    MonadError ResponseInfo m,
+    MonadLogger m
+  ) =>
+  Int ->
+  m Int
 readMoreN n = do
+  $(logDebug) ("Trying to read " <> T.pack (show n) <> " more bytes")
   current <- use bytesRemaining
   s <- ask
   more <- liftIO $ recv s n
   bytesRemaining .= (current <> more)
-  return $ BC.length more
+  $(logDebug) ("Read " <> T.pack (show (B.length more)) <> " more bytes")
+  when
+    (B.null more)
+    ( do
+        $(logDebug) "Errored on request. Reason: Expected more bytes"
+        throwError (makeErrorResponse BadRequest "Expected more bytes")
+    )
+  return $ B.length more
 
-readN :: (MonadIO m, MonadReader Socket m, MonadState ConnectionState m) => Int -> m B.ByteString
+readN ::
+  ( MonadIO m,
+    MonadReader Socket m,
+    MonadState ConnectionState m,
+    MonadError ResponseInfo m,
+    MonadLogger m
+  ) =>
+  Int ->
+  m B.ByteString
 readN n = do
   current <- use bytesRemaining
   let remaining = n - B.length current
   if remaining <= 0
     then let (ret, newState) = B.splitAt n current in ret <$ (bytesRemaining .= newState)
-    else readMoreN 1024 *> readN n --TODO: Check length here to see if we received 0 bytes
+    else readMoreN 1024 *> readN n
 
-readLine :: (MonadIO m, MonadReader Socket m, MonadState ConnectionState m) => m B.ByteString
+readLine ::
+  ( MonadIO m,
+    MonadReader Socket m,
+    MonadState ConnectionState m,
+    MonadError ResponseInfo m,
+    MonadLogger m
+  ) =>
+  m B.ByteString
 readLine = do
+  $(logDebug) "Reading until newline"
   current <- use bytesRemaining
-  --TODO: Check length here to see if we received 0 bytes
-  maybe (readMoreN 1024 *> readLine) (\(ret, newState) -> ret <$ (bytesRemaining .= newState)) (splitNewline current)
+  case splitNewline current of
+    Just (ret, newState) -> do
+      $(logDebug)
+        ( "Found newline. Read: " <> TE.decodeUtf8 ret
+            <> " Raw data: "
+            <> T.pack (B.unpack ret >>= (`showHex` ""))
+        )
+      bytesRemaining .= newState
+      return ret
+    Nothing -> do
+      $(logDebug) "Reading more bytes for newline"
+      _ <- readMoreN 1024
+      readLine
   where
     splitNewline :: B.ByteString -> Maybe (B.ByteString, B.ByteString)
     splitNewline b = splitNewlineAtIdx <$> BC.elemIndex '\n' b
       where
-        splitNewlineAtIdx i = let (before, after) = BC.splitAt i b in (removeCr before i, BC.drop 1 after)
-        removeCr before i = if BC.index before (i - 1) == '\r' then BC.init before else before
+        splitNewlineAtIdx i = let (before, after) = BC.splitAt i b in (removeCr before, BC.drop 1 after)
+        removeCr before = if not (B.null before) && BC.last before == '\r' then BC.init before else before
 
 -------------------- Errors --------------------
 
 makeErrorResponse :: Status -> T.Text -> ResponseInfo
 makeErrorResponse s err =
-  let bytesErr = TE.encodeUtf8 err
+  let bytesErr = TE.encodeUtf8 (err <> "\r\n")
    in let headers = [Header "Connection" "close", Header "Content-Length" (T.pack $ show $ B.length bytesErr)]
        in ResponseInfo Http11 s headers (Just bytesErr)
 
-aError :: (MonadError ResponseInfo m) => Kleisli m (Status, T.Text) b
-aError = Kleisli (\(status, text) -> throwError $ makeErrorResponse status text)
+aError :: (MonadError ResponseInfo m, MonadLogger m) => Kleisli m (Status, T.Text) b
+aError =
+  Kleisli
+    ( \(status, text) -> do
+        $(logDebug) ("Errored on request. Reason: " <> text)
+        throwError $ makeErrorResponse status text
+    )
 
-aSpecificErrorLeft :: (MonadError ResponseInfo m) => Kleisli m (Either (Status, T.Text) a) a
+aSpecificErrorLeft :: (MonadError ResponseInfo m, MonadLogger m) => Kleisli m (Either (Status, T.Text) a) a
 aSpecificErrorLeft = aError ||| arr id
 
-aErrorLeft :: (MonadError ResponseInfo m) => Kleisli m (Either T.Text a) a
+aErrorLeft :: (MonadError ResponseInfo m, MonadLogger m) => Kleisli m (Either T.Text a) a
 aErrorLeft = ((BadRequest,) ^>> aError) ||| arr id
 
-aErrorNothing :: (MonadError ResponseInfo m) => T.Text -> Kleisli m (Maybe a) a
+aErrorNothing :: (MonadError ResponseInfo m, MonadLogger m) => T.Text -> Kleisli m (Maybe a) a
 aErrorNothing errorMsg = maybeToRight errorMsg ^>> aErrorLeft
   where
     maybeToRight :: a -> Maybe b -> Either a b
     maybeToRight _ (Just b) = Right b
     maybeToRight a Nothing = Left a
 
-aErrorIf :: (MonadError ResponseInfo m) => (a -> Bool) -> T.Text -> Kleisli m a a
+aErrorIf :: (MonadError ResponseInfo m, MonadLogger m) => (a -> Bool) -> T.Text -> Kleisli m a a
 aErrorIf f t = (\a -> if f a then Nothing else Just a) ^>> aErrorNothing t
 
 -------------------- Receive and encode requests and responses --------------------
 
-receiveRequestInfoBytes :: (MonadIO m, MonadState ConnectionState m, MonadReader Socket m) => m [B.ByteString]
+receiveRequestInfoBytes ::
+  ( MonadIO m,
+    MonadState ConnectionState m,
+    MonadReader Socket m,
+    MonadError ResponseInfo m,
+    MonadLogger m
+  ) =>
+  m [B.ByteString]
 receiveRequestInfoBytes = do
-  requestLine <- last <$> whileM isNewline readLine
-  headers <- init <$> whileM (not . isNewline) readLine
+  requestLine <- last <$> whileM B.null readLine
+  $(logDebug) ("Got request line: " <> TE.decodeUtf8 requestLine)
+  headers <- init <$> whileM (not . B.null) readLine
+  $(logDebug) ("Read headers:\n" <> TE.decodeUtf8 (BC.unlines headers))
 
   --We'll complain about no headers later
   let processedHeaders = dropWhile (isSpace . BC.head) headers
   return (requestLine : processedHeaders)
 
-parseRequestLine :: (MonadState ConnectionState m, MonadError ResponseInfo m) => Kleisli m B.ByteString (Method, HttpDestination, ProtocolVersion)
+parseRequestLine ::
+  ( MonadState ConnectionState m,
+    MonadError ResponseInfo m,
+    MonadLogger m
+  ) =>
+  Kleisli m B.ByteString (Method, HttpDestination, ProtocolVersion)
 parseRequestLine = BC.split ' ' ^>> exactly3 "Invalid request line" >>> parseRequestLineParts >>> flatten3
   where
-    exactly3 :: (MonadError ResponseInfo m) => T.Text -> Kleisli m [a] (a, (a, a))
+    exactly3 :: (MonadError ResponseInfo m, MonadLogger m) => T.Text -> Kleisli m [a] (a, (a, a))
     exactly3 errorMsg =
       ( \case
           [a, b, c] -> Right (a, (b, c))
@@ -227,19 +306,19 @@ parseRequestLine = BC.split ' ' ^>> exactly3 "Invalid request line" >>> parseReq
 
     flatten3 = arr (\(method, (uri, protocol)) -> (method, uri, protocol))
 
-    parseMethod :: (MonadError ResponseInfo m) => Kleisli m B.ByteString Method
+    parseMethod :: (MonadError ResponseInfo m, MonadLogger m) => Kleisli m B.ByteString Method
     parseMethod = TE.decodeUtf8 ^>> readMethod ^>> aErrorNothing "Invalid method"
 
     --TODO: Handle other destination forms too
-    parseUriDestination :: (MonadError ResponseInfo m) => Kleisli m B.ByteString HttpDestination
+    parseUriDestination :: (MonadError ResponseInfo m, MonadLogger m) => Kleisli m B.ByteString HttpDestination
     parseUriDestination = TE.decodeUtf8 ^>> readHttpDestination ^>> aErrorNothing "Invalid URI destination"
 
-    parseProtocol :: (MonadError ResponseInfo m) => Kleisli m B.ByteString ProtocolVersion
+    parseProtocol :: (MonadError ResponseInfo m, MonadLogger m) => Kleisli m B.ByteString ProtocolVersion
     parseProtocol = TE.decodeUtf8 ^>> readProtocolVersion ^>> aErrorNothing "Invalid protocol version"
 
     parseRequestLineParts = parseMethod *** parseUriDestination *** parseProtocol
 
-parseHeaders :: (MonadError ResponseInfo m) => Kleisli m [B.ByteString] [Header]
+parseHeaders :: (MonadError ResponseInfo m, MonadLogger m) => Kleisli m [B.ByteString] [Header]
 parseHeaders =
   ( over (_Just . traverse) parseHeader
       . foldMap
@@ -251,8 +330,9 @@ parseHeaders =
   )
     ^>> aErrorNothing "Invalid headers"
   where
+    --Yes, really Latin1, but only for historic reasons
     parseHeader :: (B.ByteString, B.ByteString) -> Header
-    parseHeader = uncurry Header . over _1 CI.mk . over both TE.decodeLatin1 --Yes, really Latin1, but only for historic reasons
+    parseHeader = uncurry Header . over _1 CI.mk . over both TE.decodeLatin1
     separateHeaderLine :: B.ByteString -> Maybe (B.ByteString, B.ByteString)
     separateHeaderLine x = case BC.break (== ':') x of
       (_, "") -> Nothing
@@ -272,10 +352,17 @@ parseHeaders =
       | BC.head x == ' ' = Just ((lastHName, lastHValue <> BC.strip x) :| acc)
       | otherwise = separateHeaderLineWithTail (lastH : acc) x
 
-parseRequestInfo :: (MonadState ConnectionState m, MonadError ResponseInfo m) => HttpAuthority -> Kleisli m [B.ByteString] RequestInfo
-parseRequestInfo defaultAuthority = requireOne "request line" >>> (parseRequestLine *** parseHeaders) >>> makeRequestInfo
+parseRequestInfo ::
+  ( MonadState ConnectionState m,
+    MonadError ResponseInfo m,
+    MonadLogger m
+  ) =>
+  HttpAuthority ->
+  Kleisli m [B.ByteString] RequestInfo
+parseRequestInfo defaultAuthority =
+  requireOne "request line" >>> (parseRequestLine *** parseHeaders) >>> makeRequestInfo
   where
-    requireOne :: (MonadError ResponseInfo m) => T.Text -> Kleisli m [a] (a, [a])
+    requireOne :: (MonadError ResponseInfo m, MonadLogger m) => T.Text -> Kleisli m [a] (a, [a])
     requireOne unit = uncons ^>> aErrorNothing ("At least one " <> unit <> "required")
 
     makeUri headers (HttpDestination path query) protocol =
@@ -290,7 +377,7 @@ parseRequestInfo defaultAuthority = requireOne "request line" >>> (parseRequestL
        in fmap (\a -> HttpUri a path query) authority
 
     makeRequestInfo ::
-      (MonadError ResponseInfo m) =>
+      (MonadError ResponseInfo m, MonadLogger m) =>
       Kleisli m ((Method, HttpDestination, ProtocolVersion), [Header]) RequestInfo
     makeRequestInfo =
       ( \((method, destination, protocol), headers) ->
@@ -298,10 +385,25 @@ parseRequestInfo defaultAuthority = requireOne "request line" >>> (parseRequestL
       )
         ^>> aErrorLeft
 
-receiveRequestBodyNormalBytes :: (MonadIO m, MonadState ConnectionState m, MonadReader Socket m) => Int -> m (B.ByteString, [Header])
+receiveRequestBodyNormalBytes ::
+  ( MonadIO m,
+    MonadState ConnectionState m,
+    MonadReader Socket m,
+    MonadError ResponseInfo m,
+    MonadLogger m
+  ) =>
+  Int ->
+  m (B.ByteString, [Header])
 receiveRequestBodyNormalBytes n = (,[]) <$> readN n
 
-receiveRequestBodyChunked :: (MonadIO m, MonadState ConnectionState m, MonadReader Socket m, MonadError ResponseInfo m) => m (B.ByteString, [Header])
+receiveRequestBodyChunked ::
+  ( MonadIO m,
+    MonadState ConnectionState m,
+    MonadReader Socket m,
+    MonadError ResponseInfo m,
+    MonadLogger m
+  ) =>
+  m (B.ByteString, [Header])
 receiveRequestBodyChunked = do
   --Haha funny face :P
   chunks <- ((<$>) . (<$>)) snd (whileM (not . fst) receiveChunk)
@@ -311,7 +413,14 @@ receiveRequestBodyChunked = do
   -- TODO: Somehow pass in chunk extensions
   pure (B.concat (fmap fst chunks), headers)
   where
-    receiveChunk :: (MonadIO m, MonadState ConnectionState m, MonadReader Socket m, MonadError ResponseInfo m) => m (Bool, (B.ByteString, [(B.ByteString, Maybe B.ByteString)]))
+    receiveChunk ::
+      ( MonadIO m,
+        MonadState ConnectionState m,
+        MonadReader Socket m,
+        MonadError ResponseInfo m,
+        MonadLogger m
+      ) =>
+      m (Bool, (B.ByteString, [(B.ByteString, Maybe B.ByteString)]))
     receiveChunk = do
       (size, chunkExtensions) <- readLine >>= runKleisli (BC.break (not . isHexDigit) ^>> parseSize *** parseChunkExtensions)
       chunkData <-
@@ -320,10 +429,17 @@ receiveRequestBodyChunked = do
           else readN size <* ensureNewline
       pure (size == 0, (chunkData, chunkExtensions))
 
-    parseSize :: (MonadError ResponseInfo m) => Kleisli m B.ByteString Int
+    parseSize :: (MonadError ResponseInfo m, MonadLogger m) => Kleisli m B.ByteString Int
     parseSize = hexToInt ^>> aErrorNothing ""
 
-    ensureNewline :: (MonadIO m, MonadState ConnectionState m, MonadReader Socket m, MonadError ResponseInfo m) => m ()
+    ensureNewline ::
+      ( MonadIO m,
+        MonadState ConnectionState m,
+        MonadReader Socket m,
+        MonadError ResponseInfo m,
+        MonadLogger m
+      ) =>
+      m ()
     ensureNewline = do
       successfulEnd <- B.null <$> readLine
       if successfulEnd
@@ -335,7 +451,7 @@ receiveRequestBodyChunked = do
       _ -> Nothing
 
     --TODO: Use a proper parser instead of this?
-    parseChunkExtensions :: (MonadError ResponseInfo m) => Kleisli m B.ByteString [(B.ByteString, Maybe B.ByteString)]
+    parseChunkExtensions :: (MonadError ResponseInfo m, MonadLogger m) => Kleisli m B.ByteString [(B.ByteString, Maybe B.ByteString)]
     parseChunkExtensions =
       BC.break (== ';')
         ^>> first (requireLength (== 0))
@@ -358,10 +474,17 @@ receiveRequestBodyChunked = do
         leftOn :: (Arrow a) => (b -> Bool) -> a b (Either b b)
         leftOn f = arr (\a -> if f a then Left a else Right a)
 
-        requireLength :: (MonadError ResponseInfo m) => (Int -> Bool) -> Kleisli m B.ByteString B.ByteString
+        requireLength :: (MonadError ResponseInfo m, MonadLogger m) => (Int -> Bool) -> Kleisli m B.ByteString B.ByteString
         requireLength f = aErrorIf (f . B.length) "Chunk extension length not satisfied"
 
-receiveRequestBody :: (MonadIO m, MonadState ConnectionState m, MonadReader Socket m, MonadError ResponseInfo m) => Kleisli m RequestInfo (RequestInfo, Maybe (m (B.ByteString, [Header])))
+receiveRequestBody ::
+  ( MonadIO m,
+    MonadState ConnectionState m,
+    MonadReader Socket m,
+    MonadError ResponseInfo m,
+    MonadLogger m
+  ) =>
+  Kleisli m RequestInfo (RequestInfo, Maybe (m (B.ByteString, [Header])))
 receiveRequestBody =
   ( \requestInfo ->
       --TODO: Handle multiple headers matching
@@ -388,21 +511,38 @@ receiveRequestBody =
 
 -------------------- Server functions --------------------
 
-newtype ConnectionMonad m a = ConnectionMonad {runConnection :: MExcept.ExceptT ResponseInfo (MState.StateT ConnectionState m) a}
-  deriving (Functor, Applicative, Monad, MonadIO, MonadState ConnectionState, MonadError ResponseInfo)
+newtype ConnectionMonad m a = ConnectionMonad
+  {runConnection :: MExcept.ExceptT ResponseInfo (MState.StateT ConnectionState m) a}
+  deriving
+    ( Functor,
+      Applicative,
+      Monad,
+      MonadIO,
+      MonadState ConnectionState,
+      MonadError ResponseInfo,
+      MonadLogger
+    )
 
 instance MonadReader r m => MonadReader r (ConnectionMonad m) where
   ask = ConnectionMonad (lift ask)
   local f (ConnectionMonad m) = ConnectionMonad (local f m)
 
 byteConvertLayer ::
-  (MonadIO m, MonadState ConnectionState m, MonadError ResponseInfo m, MonadReader Socket m) =>
+  ( MonadIO m,
+    MonadState ConnectionState m,
+    MonadError ResponseInfo m,
+    MonadReader Socket m,
+    MonadLogger m
+  ) =>
   HttpAuthority ->
   Bidi (Kleisli m) [B.ByteString] (RequestInfo, Maybe (m (B.ByteString, [Header]))) ResponseInfo [B.ByteString]
 byteConvertLayer defaultAuthority = Bidi (parseRequestInfo defaultAuthority >>> receiveRequestBody) responseToBytes
 
 handleServer ::
-  (MonadIO m, MonadReader Socket m) =>
+  ( MonadUnliftIO m,
+    MonadReader Socket m,
+    MonadLogger m
+  ) =>
   HttpAuthority ->
   Kleisli (ConnectionMonad m) (RequestInfo, Maybe (ConnectionMonad m (B.ByteString, [Header]))) ResponseInfo ->
   m ()
@@ -410,22 +550,42 @@ handleServer defaultAuthority handleRequest =
   handleServerRaw $ byteConvertLayer defaultAuthority .|| handleRequest
 
 handleServerRaw ::
-  (MonadIO m, MonadReader Socket m) =>
+  ( MonadUnliftIO m,
+    MonadReader Socket m,
+    MonadLogger m
+  ) =>
   Kleisli (ConnectionMonad m) [B.ByteString] [B.ByteString] ->
   m ()
 handleServerRaw handleRequest = loopRun ""
   where
     loopRun input = do
+      $(logInfo) "Waiting for new request"
       s <- ask
-      (response, connectionState) <- resolveConnectionEffects input $ do
-        requestInfoBytes <- receiveRequestInfoBytes
-        runKleisli handleRequest requestInfoBytes
+      ret <- tryAny $
+        resolveConnectionEffects input $ do
+          requestInfoBytes <- receiveRequestInfoBytes
+          $(logInfo) ("Received request:\n" <> TE.decodeUtf8 (BC.unlines requestInfoBytes))
+          runKleisli handleRequest requestInfoBytes
 
-      liftIO $ sendMany s response
-      if connectionState ^. closeWhenDone
-        then pure ()
-        else loopRun (connectionState ^. bytesRemaining)
+      case ret of
+        Right (Right response, connectionState) -> do
+          liftIO $ sendMany s response
+          if connectionState ^. closeWhenDone
+            then pure ()
+            else loopRun (connectionState ^. bytesRemaining)
+        Right (Left err, _) -> do
+          liftIO $ sendMany s (responseToBytes err)
+          pure ()
+        Left ex ->
+          if isAsyncException ex
+            then throwIO ex
+            else do
+              liftIO $
+                sendMany
+                  s
+                  (responseToBytes (makeErrorResponse InternalServerError (T.pack (displayException ex))))
+              pure ()
 
-    resolveConnectionEffects :: (Monad m) => B.ByteString -> ConnectionMonad m [B.ByteString] -> m ([B.ByteString], ConnectionState)
+    resolveConnectionEffects :: B.ByteString -> ConnectionMonad m [B.ByteString] -> m (Either ResponseInfo [B.ByteString], ConnectionState)
     resolveConnectionEffects byteInput (ConnectionMonad (MExcept.ExceptT m)) =
-      over _1 (fromEither . over _Left responseToBytes) <$> MState.runStateT m (freshConnectionState byteInput)
+      MState.runStateT m (freshConnectionState byteInput)

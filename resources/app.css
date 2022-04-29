@@ -1,0 +1,27 @@
+html {
+    scroll-behavior: smooth;
+    position: relative;
+    min-height: 100%;
+}
+
+.site {
+    display: flex;
+    min-height: 100vh;
+    flex-direction: column;
+}
+
+.site-content {
+    flex: 1;
+}
+
+.container-pad {
+    padding-left: 25px;
+    padding-right: 25px;
+    padding-top: 10px;
+}
+
+.site-footer {
+    text-align: center;
+    font-size: 1rem;
+    color: #adb5bd;
+}

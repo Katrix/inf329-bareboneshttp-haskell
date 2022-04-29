@@ -1,8 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module BareBonesHttp.Uri.Parsers
-  (
-    Parser,
+  ( Parser,
     uri,
     hierPart,
     uriReference,
@@ -36,11 +35,11 @@ module BareBonesHttp.Uri.Parsers
     subDelims,
     hexDig,
     alpha,
-    digit
+    digit,
   )
 where
 
-import BareBonesHttp.Uri.Definitions hiding (scheme, hierPart, query, fragment, userInfo, host, port)
+import BareBonesHttp.Uri.Definitions hiding (fragment, hierPart, host, port, query, scheme, userInfo)
 import Control.Applicative hiding (many, some)
 import Data.Char (ord)
 import qualified Data.Text as T
@@ -96,7 +95,7 @@ host :: Parser Host
 host = choice [ipLiteral, try ipv4Address, regName]
 
 port :: Parser Port
-port = Port . read <$> many digit
+port = Port . (\s -> if null s then Nothing else read s) <$> many digit
 
 ipLiteral :: Parser Host
 ipLiteral = HostIPLiteral <$> (char '[' *> (ipv6Address <|> ipvFuture) <* char ']')

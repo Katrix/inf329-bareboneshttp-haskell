@@ -63,6 +63,15 @@ matcherFromFun f =
 exact :: T.Text -> UriMatcher ()
 exact t = matcherFromFun (\t' -> if t == t' then Just () else Nothing)
 
+noSegmentsRemaining :: UriMatcher ()
+noSegmentsRemaining =
+  UriMatcher
+    ( state
+        ( \(HttpPath p, q) ->
+            if null p then (Just (), (HttpPath [], q)) else (Nothing, (HttpPath p, q))
+        )
+    )
+
 matchString :: UriMatcher T.Text
 matchString = matcherFromFun Just
 
@@ -95,18 +104,3 @@ simpleNotFound r = Response NotFound Map.empty Map.empty Nothing (_requestCap r)
 
 routes :: Applicative m => (forall c. Request c -> Response c) -> [RouteHandler m] -> RouteHandler m
 routes makeNotFound = foldr (<>) (notFoundRoute makeNotFound)
-
-test :: Applicative m => RouteHandler m
-test =
-  routes
-    simpleNotFound
-    [ handle
-        (match [Get] (exact "foo" /: matchInt /: matchString /: matchDouble))
-        (\req (a :/: b :/: c :/: d) -> undefined),
-      handle
-        (match [Get] (exact "foo" /: matchInt /: matchString /: matchDouble))
-        (\req (a :/: b :/: c :/: d) -> undefined),
-      handle
-        (match [Get] (exact "foo" /: matchInt /: matchString /: matchDouble))
-        (\req (a :/: b :/: c :/: d) -> undefined)
-    ]

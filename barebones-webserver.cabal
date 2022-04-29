@@ -25,6 +25,8 @@ library
   exposed-modules:
       BareBonesHttp.Bidi
       BareBonesHttp.Html
+      BareBonesHttp.Html.Attributes
+      BareBonesHttp.Html.Tags
       BareBonesHttp.Http
       BareBonesHttp.Http.AsResponse
       BareBonesHttp.Http.Capabilities
@@ -36,12 +38,10 @@ library
       BareBonesHttp.Http.LogTimeSpent
       BareBonesHttp.Http.RouteHandler
       BareBonesHttp.Http.SecurityHeaders
-      BareBonesHttp.RunServer
       BareBonesHttp.Uri
       BareBonesHttp.Uri.Definitions
       BareBonesHttp.Uri.Parsers
       BareBonesHttp.Uri.PercentEncoding
-      Lib
   other-modules:
       Paths_barebones_webserver
   hs-source-dirs:
@@ -51,15 +51,19 @@ library
     , bytestring ==0.10.*
     , case-insensitive ==1.2.*
     , containers ==0.6.*
-    , lens ==5.*
-    , megaparsec ==9.*
-    , mtl ==2.*
+    , directory ==1.3.*
+    , lens >=5 && <5.1
+    , megaparsec ==9.2.*
+    , monad-logger ==0.3.*
+    , mtl ==2.2.*
     , network ==3.1.*
     , network-run ==0.2.*
-    , nonce ==1.*
+    , nonce ==1.0.*
+    , stm ==2.5.*
     , text ==1.2.*
-    , time >=1.9 && <2
+    , time ==1.9.*
     , transformers ==0.5.*
+    , unliftio >=0.2.0 && <0.3
     , unliftio-core >=0.2.0 && <0.3
   default-language: Haskell2010
 
@@ -76,15 +80,19 @@ executable barebones-webserver-exe
     , bytestring ==0.10.*
     , case-insensitive ==1.2.*
     , containers ==0.6.*
-    , lens ==5.*
-    , megaparsec ==9.*
-    , mtl ==2.*
+    , directory ==1.3.*
+    , lens >=5 && <5.1
+    , megaparsec ==9.2.*
+    , monad-logger ==0.3.*
+    , mtl ==2.2.*
     , network ==3.1.*
     , network-run ==0.2.*
-    , nonce ==1.*
+    , nonce ==1.0.*
+    , stm ==2.5.*
     , text ==1.2.*
-    , time >=1.9 && <2
+    , time ==1.9.*
     , transformers ==0.5.*
+    , unliftio >=0.2.0 && <0.3
     , unliftio-core >=0.2.0 && <0.3
   default-language: Haskell2010
 
@@ -102,14 +110,18 @@ test-suite barebones-webserver-test
     , bytestring ==0.10.*
     , case-insensitive ==1.2.*
     , containers ==0.6.*
-    , lens ==5.*
-    , megaparsec ==9.*
-    , mtl ==2.*
+    , directory ==1.3.*
+    , lens >=5 && <5.1
+    , megaparsec ==9.2.*
+    , monad-logger ==0.3.*
+    , mtl ==2.2.*
     , network ==3.1.*
     , network-run ==0.2.*
-    , nonce ==1.*
+    , nonce ==1.0.*
+    , stm ==2.5.*
     , text ==1.2.*
-    , time >=1.9 && <2
+    , time ==1.9.*
     , transformers ==0.5.*
+    , unliftio >=0.2.0 && <0.3
     , unliftio-core >=0.2.0 && <0.3
   default-language: Haskell2010

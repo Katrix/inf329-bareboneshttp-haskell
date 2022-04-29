@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module BareBonesHttp.Http
   ( module BareBonesHttp.Http.Definitions,
@@ -10,6 +11,7 @@ module BareBonesHttp.Http
     module BareBonesHttp.Http.RouteHandler,
     RequestMonad (..),
     RequestMonadT (..),
+    serveFiles,
     handleServer,
     runServer,
     handleServerRoutes,
@@ -25,10 +27,11 @@ import qualified BareBonesHttp.Http.Internal.Connections as C
 import BareBonesHttp.Http.RouteHandler
 import Control.Arrow
 import Control.Lens
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import Control.Monad.Error.Class
 import Control.Monad.IO.Class
 import Control.Monad.IO.Unlift
+import Control.Monad.Logger
 import Control.Monad.Reader.Class
 import qualified Control.Monad.Trans.Except as MExcept
 import qualified Control.Monad.Trans.RWS as MRWS
@@ -36,10 +39,12 @@ import qualified Control.Monad.Trans.Reader as MReader
 import qualified Control.Monad.Trans.State as MState
 import qualified Data.ByteString as B
 import qualified Data.CaseInsensitive as CI
+import Data.List (intercalate)
 import qualified Data.Map.Lazy as Map
 import qualified Data.Text as T
 import Network.Run.TCP
 import Network.Socket
+import System.Directory (doesFileExist)
 
 -------------------- Request & Response --------------------
 
@@ -119,7 +124,7 @@ newtype RequestMonadT m a = RequestMonad
         )
         a
   }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadError (Response ()))
+  deriving (Functor, Applicative, Monad, MonadIO, MonadError (Response ()), MonadLogger)
 
 connectionToRequestMonad :: (Functor m) => C.ConnectionMonad m a -> RequestMonadT m a
 connectionToRequestMonad (C.ConnectionMonad (MExcept.ExceptT (MState.StateT ma))) =
@@ -180,12 +185,104 @@ setCorrectnessHeaders = Bidi (arr id) (Kleisli ensureCloseCorrect >>> Kleisli en
 
 -------------------- Server functions --------------------
 
+serveFiles :: (MonadIO m, MonadError (Response ()) m, MonadLogger m) => String -> Request c -> [T.Text] -> m (Response c)
+serveFiles basePath req path = do
+  let pathHasGetParent = ".." `elem` path
+  when pathHasGetParent (throwError $ Response Forbidden Map.empty Map.empty Nothing ())
+  let filePath = basePath ++ intercalate "/" (fmap T.unpack path)
+  $(logInfo) ("Trying to send file " <> T.pack filePath)
+  fileExists <- liftIO (doesFileExist filePath)
+  unless fileExists (throwError $ Response NotFound Map.empty Map.empty Nothing ())
+  contents <- liftIO (B.readFile filePath)
+  let fileExtension = snd (T.breakOnEnd "." (last path))
+  let contentTypeHeader = maybe Map.empty (Map.singleton "Content-Type") (contentTypeFromFileExtension fileExtension)
+  pure $ Response Ok contentTypeHeader Map.empty (Just contents) (_requestCap req)
+
+--https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types/Common_types
+contentTypeFromFileExtension :: T.Text -> Maybe T.Text
+contentTypeFromFileExtension "aac" = Just "audio/aac"
+contentTypeFromFileExtension "abw" = Just "application/x-abiword"
+contentTypeFromFileExtension "arc" = Just "application/x-freearc"
+contentTypeFromFileExtension "avif" = Just "image/avif"
+contentTypeFromFileExtension "avi" = Just "video/x-msvideo"
+contentTypeFromFileExtension "azw" = Just "application/vnd.amazon.ebook"
+contentTypeFromFileExtension "bin" = Just "application/octet-stream"
+contentTypeFromFileExtension "bmp" = Just "image/bmp"
+contentTypeFromFileExtension "bz" = Just "application/x-bzip"
+contentTypeFromFileExtension "bz2" = Just "application/x-bzip2"
+contentTypeFromFileExtension "cda" = Just "application/x-cdf"
+contentTypeFromFileExtension "csh" = Just "application/x-csh"
+contentTypeFromFileExtension "css" = Just "text/css"
+contentTypeFromFileExtension "csv" = Just "text/csv"
+contentTypeFromFileExtension "doc" = Just "application/msword"
+contentTypeFromFileExtension "docx" = Just "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+contentTypeFromFileExtension "eot" = Just "application/vnd.ms-fontobject"
+contentTypeFromFileExtension "epub" = Just "application/epub+zip"
+contentTypeFromFileExtension "gz" = Just "application/gzip"
+contentTypeFromFileExtension "gif" = Just "image/gif"
+contentTypeFromFileExtension "htm" = Just "text/html"
+contentTypeFromFileExtension "html" = Just "text/html"
+contentTypeFromFileExtension "ico" = Just "image/vnd.microsoft.icon"
+contentTypeFromFileExtension "ics" = Just "text/calendar"
+contentTypeFromFileExtension "jar" = Just "application/java-archive"
+contentTypeFromFileExtension "jpeg" = Just "image/jpeg"
+contentTypeFromFileExtension "jpg" = Just "image/jpeg"
+contentTypeFromFileExtension "js" = Just "text/javascript"
+contentTypeFromFileExtension "json" = Just "application/json"
+contentTypeFromFileExtension "jsonld" = Just "application/ld+json"
+contentTypeFromFileExtension "mid" = Just "audio/midi audio/x-midi"
+contentTypeFromFileExtension "midi" = Just "audio/midi audio/x-midi"
+contentTypeFromFileExtension "mjs" = Just "text/javascript"
+contentTypeFromFileExtension "mp3" = Just "audio/mpeg"
+contentTypeFromFileExtension "mp4" = Just "video/mp4"
+contentTypeFromFileExtension "mpeg" = Just "video/mpeg"
+contentTypeFromFileExtension "mpkg" = Just "application/vnd.apple.installer+xml"
+contentTypeFromFileExtension "odp" = Just "application/vnd.oasis.opendocument.presentation"
+contentTypeFromFileExtension "ods" = Just "application/vnd.oasis.opendocument.spreadsheet"
+contentTypeFromFileExtension "odt" = Just "application/vnd.oasis.opendocument.text"
+contentTypeFromFileExtension "oga" = Just "audio/ogg"
+contentTypeFromFileExtension "ogv" = Just "video/ogg"
+contentTypeFromFileExtension "ogx" = Just "application/ogg"
+contentTypeFromFileExtension "opus" = Just "audio/opus"
+contentTypeFromFileExtension "otf" = Just "font/otf"
+contentTypeFromFileExtension "png" = Just "image/png"
+contentTypeFromFileExtension "pdf" = Just "application/pdf"
+contentTypeFromFileExtension "php" = Just "application/x-httpd-php"
+contentTypeFromFileExtension "ppt" = Just "application/vnd.ms-powerpoint"
+contentTypeFromFileExtension "pptx" = Just "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+contentTypeFromFileExtension "rar" = Just "application/vnd.rar"
+contentTypeFromFileExtension "rtf" = Just "application/rtf"
+contentTypeFromFileExtension "sh" = Just "application/x-sh"
+contentTypeFromFileExtension "svg" = Just "image/svg+xml"
+contentTypeFromFileExtension "swf" = Just "application/x-shockwave-flash"
+contentTypeFromFileExtension "tar" = Just "application/x-tar"
+contentTypeFromFileExtension "tif" = Just "image/tiff"
+contentTypeFromFileExtension "tiff" = Just "image/tiff"
+contentTypeFromFileExtension "ts" = Just "video/mp2t"
+contentTypeFromFileExtension "ttf" = Just "font/ttf"
+contentTypeFromFileExtension "txt" = Just "text/plain"
+contentTypeFromFileExtension "vsd" = Just "application/vnd.visio"
+contentTypeFromFileExtension "wav" = Just "audio/wav"
+contentTypeFromFileExtension "weba" = Just "audio/webm"
+contentTypeFromFileExtension "webm" = Just "video/webm"
+contentTypeFromFileExtension "webp" = Just "image/webp"
+contentTypeFromFileExtension "woff" = Just "font/woff"
+contentTypeFromFileExtension "woff2" = Just "font/woff2"
+contentTypeFromFileExtension "xhtml" = Just "application/xhtml+xml"
+contentTypeFromFileExtension "xls" = Just "application/vnd.ms-excel"
+contentTypeFromFileExtension "xlsx" = Just "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+contentTypeFromFileExtension "xml" = Just "application/xml"
+contentTypeFromFileExtension "xul" = Just "application/vnd.mozilla.xul+xml"
+contentTypeFromFileExtension "zip" = Just "application/zip"
+contentTypeFromFileExtension "7z" = Just "application/x-7z-compressed"
+contentTypeFromFileExtension _ = Nothing
+
 runTCPServerM :: (MonadUnliftIO m) => Maybe String -> String -> (Socket -> m ()) -> m ()
 runTCPServerM hostName port handler =
   withRunInIO $ \runInIO -> runTCPServer hostName port (runInIO . handler)
 
 runServerRoutes ::
-  (MonadUnliftIO m) =>
+  (MonadUnliftIO m, MonadLogger m) =>
   Maybe String ->
   String ->
   HttpAuthority ->
@@ -199,7 +296,7 @@ runServerRoutes hostName port defaultAuthority middleware handler =
     (MReader.runReaderT (handleServerRoutes defaultAuthority middleware handler))
 
 handleServerRoutes ::
-  (MonadIO m, MonadReader Socket m) =>
+  (MonadUnliftIO m, MonadReader Socket m, MonadLogger m) =>
   HttpAuthority ->
   Bidi (Kleisli (RequestMonadT m)) (Request ()) (Request c1) (Response c1) (Response c2) ->
   RouteHandler (RequestMonadT m) ->
@@ -208,7 +305,7 @@ handleServerRoutes defaultAuthority middleware handler =
   handleServer defaultAuthority (middleware .|| Kleisli (routeHandlerOrSimpleNotFound handler))
 
 runServer ::
-  (MonadUnliftIO m) =>
+  (MonadUnliftIO m, MonadLogger m) =>
   Maybe String ->
   String ->
   HttpAuthority ->
@@ -221,7 +318,7 @@ runServer hostName port defaultAuthority handleRequest =
     (MReader.runReaderT (handleServer defaultAuthority handleRequest))
 
 handleServer ::
-  (MonadIO m, MonadReader Socket m) =>
+  (MonadUnliftIO m, MonadReader Socket m, MonadLogger m) =>
   HttpAuthority ->
   Kleisli (RequestMonadT m) (Request ()) (Response c) ->
   m ()

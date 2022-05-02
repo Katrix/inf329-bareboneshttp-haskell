@@ -95,7 +95,7 @@ responseToResponseInfo :: ProtocolVersion -> Response c -> C.ResponseInfo
 responseToResponseInfo protocol (Response status headers cookies body _) =
   C.ResponseInfo protocol status (headersFromMap headers ++ cookiesFromMap SetCookie cookies) body
 
-transformRequestResponse :: (Arrow a) => Bidi a C.RequestInfo (Request ()) (Response c) C.ResponseInfo
+transformRequestResponse :: (Arrow a) => Bidi a C.RequestInfo (Request ()) (Response ()) C.ResponseInfo
 transformRequestResponse = Bidi (arr requestInfoToRequest) (arr (responseToResponseInfo Http11))
 
 -------------------- RequestMonad --------------------
@@ -286,7 +286,7 @@ runServerRoutes ::
   Maybe String ->
   String ->
   HttpAuthority ->
-  Bidi (Kleisli (RequestMonadT (MReader.ReaderT Socket m))) (Request ()) (Request c1) (Response c1) (Response c2) ->
+  Bidi (Kleisli (RequestMonadT (MReader.ReaderT Socket m))) (Request ()) (Request c1) (Response c1) (Response ()) ->
   RouteHandler (RequestMonadT (MReader.ReaderT Socket m)) c1 ->
   m ()
 runServerRoutes hostName port defaultAuthority middleware handler =
@@ -298,7 +298,7 @@ runServerRoutes hostName port defaultAuthority middleware handler =
 handleServerRoutes ::
   (MonadUnliftIO m, MonadReader Socket m, MonadLogger m) =>
   HttpAuthority ->
-  Bidi (Kleisli (RequestMonadT m)) (Request ()) (Request c1) (Response c1) (Response c2) ->
+  Bidi (Kleisli (RequestMonadT m)) (Request ()) (Request c1) (Response c1) (Response ()) ->
   RouteHandler (RequestMonadT m) c1 ->
   m ()
 handleServerRoutes defaultAuthority middleware handler =
@@ -309,7 +309,7 @@ runServer ::
   Maybe String ->
   String ->
   HttpAuthority ->
-  Kleisli (RequestMonadT (MReader.ReaderT Socket m)) (Request ()) (Response c) ->
+  Kleisli (RequestMonadT (MReader.ReaderT Socket m)) (Request ()) (Response ()) ->
   m ()
 runServer hostName port defaultAuthority handleRequest =
   runTCPServerM
@@ -320,7 +320,7 @@ runServer hostName port defaultAuthority handleRequest =
 handleServer ::
   (MonadUnliftIO m, MonadReader Socket m, MonadLogger m) =>
   HttpAuthority ->
-  Kleisli (RequestMonadT m) (Request ()) (Response c) ->
+  Kleisli (RequestMonadT m) (Request ()) (Response ()) ->
   m ()
 handleServer defaultAuthority handleRequest =
   C.handleServer

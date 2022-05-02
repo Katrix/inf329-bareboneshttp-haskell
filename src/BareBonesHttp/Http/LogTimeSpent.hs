@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -15,30 +16,34 @@ import Data.Time
 newtype StartedProcessing = StartedProcessing {startedProcessingTime :: UTCTime}
 
 logTimeSpent ::
-  (MonadIO m, AddCap StartedProcessing ic1 ic2, HasCap StartedProcessing oc) =>
-  Bidi (Kleisli m) (Request ic1) (Request ic2) (Response oc) (Response oc)
+  (MonadIO m) =>
+  Bidi (Kleisli m) (Request c) (Request (AddCap StartedProcessing c)) (Response (AddCap StartedProcessing c)) (Response c)
 logTimeSpent = Bidi (Kleisli setStartedTime) (Kleisli addHeaders)
   where
-    setStartedTime :: (MonadIO m, AddCap StartedProcessing ic1 ic2) => Request ic1 -> m (Request ic2)
+    setStartedTime :: (MonadIO m) => Request c -> m (Request (AddCap StartedProcessing c))
     setStartedTime req = (\t -> over requestCap (addCap (StartedProcessing t)) req) <$> liftIO getCurrentTime
     addHeaders resp =
       ( \newT ->
-          set
-            (responseHeaders . at "Route-Time")
-            --God I hope this is correct. Appareantly only seconds exist in the Haskell world
-            ( ( Just
-                  . T.pack
-                  . (show :: Integer -> String)
-                  . round
-                  . (/ 1000)
-                  . nominalDiffTimeToSeconds
-                  . diffUTCTime newT
-                  . startedProcessingTime
-                  . getCap
-                  . (^. responseCap)
-              )
-                resp
-            )
+          ( over
+              responseCap
+              removeCap
+              . set
+                (responseHeaders . at "Route-Time")
+                --God I hope this is correct. Appareantly only seconds exist in the Haskell world
+                ( ( Just
+                      . T.pack
+                      . (show :: Integer -> String)
+                      . round
+                      . (/ 1000)
+                      . nominalDiffTimeToSeconds
+                      . diffUTCTime newT
+                      . startedProcessingTime
+                      . getCap
+                      . (^. responseCap)
+                  )
+                    resp
+                )
+          )
             resp
       )
         <$> liftIO getCurrentTime

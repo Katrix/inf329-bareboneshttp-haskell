@@ -28,16 +28,20 @@ addSecurityHeaders = Bidi (arr id) (arr addHeaders)
 newtype CspNonce = CspNonce {cspNonce :: T.Text}
 
 addContentSecurityPolicy ::
-  (MonadIO m, AddCap CspNonce ic1 ic2, HasCap CspNonce oc) =>
+  (MonadIO m) =>
   Nonce.Generator ->
   (T.Text -> T.Text) ->
-  Bidi (Kleisli m) (Request ic1) (Request ic2) (Response oc) (Response oc)
+  Bidi (Kleisli m) (Request c) (Request (AddCap CspNonce c)) (Response (AddCap CspNonce c)) (Response c)
 addContentSecurityPolicy generator policy = Bidi (Kleisli addNonce) (arr addHeaders)
   where
-    addNonce :: (MonadIO m, AddCap CspNonce ic1 ic2) => Request ic1 -> m (Request ic2)
+    addNonce :: (MonadIO m) => Request c -> m (Request (AddCap CspNonce c))
     addNonce req = (\n -> over requestCap (addCap (CspNonce n)) req) <$> Nonce.nonce128urlT generator
     addHeaders resp =
-      set
-        (responseHeaders . at "Content-Security-Policy")
-        ((Just . policy . cspNonce . getCap . (^. responseCap)) resp)
+      ( over
+          responseCap
+          removeCap
+          . set
+            (responseHeaders . at "Content-Security-Policy")
+            ((Just . policy . cspNonce . getCap . (^. responseCap)) resp)
+      )
         resp

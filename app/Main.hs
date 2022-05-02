@@ -13,7 +13,6 @@ import BareBonesHttp.Http.LogTimeSpent
 import BareBonesHttp.Http.SecurityHeaders
 import Control.Concurrent.STM
 import Control.Monad.Error.Class
-import Control.Monad.State.Class
 import Control.Monad.IO.Class
 import Control.Monad.Logger
 import qualified Data.Text as T

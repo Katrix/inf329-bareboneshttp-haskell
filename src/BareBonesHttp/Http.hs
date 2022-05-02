@@ -287,7 +287,7 @@ runServerRoutes ::
   String ->
   HttpAuthority ->
   Bidi (Kleisli (RequestMonadT (MReader.ReaderT Socket m))) (Request ()) (Request c1) (Response c1) (Response c2) ->
-  RouteHandler (RequestMonadT (MReader.ReaderT Socket m)) ->
+  RouteHandler (RequestMonadT (MReader.ReaderT Socket m)) c1 ->
   m ()
 runServerRoutes hostName port defaultAuthority middleware handler =
   runTCPServerM
@@ -299,7 +299,7 @@ handleServerRoutes ::
   (MonadUnliftIO m, MonadReader Socket m, MonadLogger m) =>
   HttpAuthority ->
   Bidi (Kleisli (RequestMonadT m)) (Request ()) (Request c1) (Response c1) (Response c2) ->
-  RouteHandler (RequestMonadT m) ->
+  RouteHandler (RequestMonadT m) c1 ->
   m ()
 handleServerRoutes defaultAuthority middleware handler =
   handleServer defaultAuthority (middleware .|| Kleisli (routeHandlerOrSimpleNotFound handler))

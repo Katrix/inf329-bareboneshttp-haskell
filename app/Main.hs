@@ -13,6 +13,7 @@ import BareBonesHttp.Http.LogTimeSpent
 import BareBonesHttp.Http.SecurityHeaders
 import Control.Concurrent.STM
 import Control.Monad.Error.Class
+import Control.Monad.State.Class
 import Control.Monad.IO.Class
 import Control.Monad.Logger
 import qualified Data.Text as T
@@ -29,7 +30,7 @@ main = do
         (addSecurityHeaders .| logTimeSpent)
         (applicationRoutes counter)
 
-applicationRoutes :: (MonadIO m, MonadLogger m, MonadError (Response ()) m) => TVar Int -> RouteHandler m
+applicationRoutes :: (MonadIO m, MonadLogger m, MonadError (Response ()) m, HasCap StartedProcessing c) => TVar Int -> RouteHandler m c
 applicationRoutes counter =
   routes
     simpleNotFound

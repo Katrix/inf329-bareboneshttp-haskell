@@ -15,9 +15,9 @@ import qualified Data.Map as Map
 import qualified Data.Text as T
 import Text.Read (readMaybe)
 
-newtype RouteHandler m = RouteHandler {routeFun :: forall c. Request c -> Maybe (m (Response c))}
+newtype RouteHandler m c = RouteHandler {routeFun :: Request c -> Maybe (m (Response c))}
 
-instance Semigroup (RouteHandler m) where
+instance Semigroup (RouteHandler m c) where
   (RouteHandler f1) <> (RouteHandler f2) =
     RouteHandler
       (\r -> f1 r `maybeOrElse` f2 r)
@@ -27,7 +27,7 @@ instance Semigroup (RouteHandler m) where
       maybeOrElse _ (Just a) = Just a
       maybeOrElse Nothing Nothing = Nothing
 
-routeHandlerOrSimpleNotFound :: Applicative m => RouteHandler m -> forall c. Request c -> m (Response c)
+routeHandlerOrSimpleNotFound :: Applicative m => RouteHandler m c -> Request c -> m (Response c)
 routeHandlerOrSimpleNotFound (RouteHandler fun) r = case fun r of
   Just resp -> resp
   Nothing -> pure $ simpleNotFound r
@@ -93,14 +93,14 @@ match okMethods matcher method uri =
     then runMatcher matcher uri
     else Nothing
 
-handle :: (Method -> HttpUri -> Maybe a) -> (forall c. Request c -> a -> m (Response c)) -> RouteHandler m
+handle :: (Method -> HttpUri -> Maybe a) -> (Request c -> a -> m (Response c)) -> RouteHandler m c
 handle matcher handler = RouteHandler (\r -> handler r <$> matcher (_requestMethod r) (_requestUri r))
 
-notFoundRoute :: Applicative m => (forall c. Request c -> Response c) -> RouteHandler m
+notFoundRoute :: Applicative m => (Request c -> Response c) -> RouteHandler m c
 notFoundRoute make = RouteHandler (Just . pure . make)
 
 simpleNotFound :: Request c -> Response c
 simpleNotFound r = Response NotFound Map.empty Map.empty Nothing (_requestCap r)
 
-routes :: Applicative m => (forall c. Request c -> Response c) -> [RouteHandler m] -> RouteHandler m
+routes :: Applicative m => (Request c -> Response c) -> [RouteHandler m c] -> RouteHandler m c
 routes makeNotFound = foldr (<>) (notFoundRoute makeNotFound)

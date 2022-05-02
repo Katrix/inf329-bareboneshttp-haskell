@@ -4,8 +4,7 @@
 module BareBonesHttp.Http.SecurityHeaders where
 
 import BareBonesHttp.Bidi
-import BareBonesHttp.Http.Capabilities
-import BareBonesHttp.Http.Definitions
+import BareBonesHttp.Http
 import Control.Arrow
 import Control.Lens
 import Control.Monad.IO.Class
@@ -31,7 +30,7 @@ addContentSecurityPolicy ::
   (MonadIO m) =>
   Nonce.Generator ->
   (T.Text -> T.Text) ->
-  Bidi (Kleisli m) (Request c) (Request (AddCap CspNonce c)) (Response (AddCap CspNonce c)) (Response c)
+  MiddleWare m c (AddCap CspNonce c)
 addContentSecurityPolicy generator policy = Bidi (Kleisli addNonce) (arr addHeaders)
   where
     addNonce :: (MonadIO m) => Request c -> m (Request (AddCap CspNonce c))

@@ -6,21 +6,24 @@
 
 module BareBonesHttp.Http.RouteHandler where
 
+import BareBonesHttp.Bidi
 import BareBonesHttp.Http.Definitions
 import BareBonesHttp.Uri.Definitions (Query)
 import Control.Applicative
+import Control.Arrow
 import Control.Lens
 import Control.Monad.State
 import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Text.Read (readMaybe)
 
-newtype RouteHandler m c = RouteHandler {routeFun :: Request c -> Maybe (m (Response c))}
+newtype RouteHandler m c = RouteHandler {routeFun :: Request c -> m (Maybe (Response c))}
 
-instance Semigroup (RouteHandler m c) where
+instance Applicative m => Semigroup (RouteHandler m c) where
   (RouteHandler f1) <> (RouteHandler f2) =
     RouteHandler
-      (\r -> f1 r `maybeOrElse` f2 r)
+      (\r -> liftA2 maybeOrElse (f1 r) (f2 r))
     where
       maybeOrElse :: Maybe a -> Maybe a -> Maybe a
       maybeOrElse (Just a) _ = Just a
@@ -28,9 +31,7 @@ instance Semigroup (RouteHandler m c) where
       maybeOrElse Nothing Nothing = Nothing
 
 routeHandlerOrSimpleNotFound :: Applicative m => RouteHandler m c -> Request c -> m (Response c)
-routeHandlerOrSimpleNotFound (RouteHandler fun) r = case fun r of
-  Just resp -> resp
-  Nothing -> pure $ simpleNotFound r
+routeHandlerOrSimpleNotFound (RouteHandler fun) r = fromMaybe (simpleNotFound r) <$> fun r
 
 newtype UriMatcher a = UriMatcher {getMatcher :: State (HttpPath, Maybe Query) (Maybe a)}
   deriving (Functor)
@@ -93,14 +94,30 @@ match okMethods matcher method uri =
     then runMatcher matcher uri
     else Nothing
 
-handle :: (Method -> HttpUri -> Maybe a) -> (Request c -> a -> m (Response c)) -> RouteHandler m c
-handle matcher handler = RouteHandler (\r -> handler r <$> matcher (_requestMethod r) (_requestUri r))
+handle :: Applicative m => (Method -> HttpUri -> Maybe a) -> (Request c -> a -> m (Response c)) -> RouteHandler m c
+handle matcher handler = RouteHandler (\r -> traverse (handler r) (matcher (_requestMethod r) (_requestUri r)))
 
 notFoundRoute :: Applicative m => (Request c -> Response c) -> RouteHandler m c
-notFoundRoute make = RouteHandler (Just . pure . make)
+notFoundRoute make = RouteHandler (pure . pure . make)
 
 simpleNotFound :: Request c -> Response c
 simpleNotFound r = Response NotFound Map.empty Map.empty Nothing (_requestCap r)
 
 routes :: Applicative m => (Request c -> Response c) -> [RouteHandler m c] -> RouteHandler m c
 routes makeNotFound = foldr (<>) (notFoundRoute makeNotFound)
+
+addMiddlewareBefore ::
+  (Monad m) =>
+  Bidi (Kleisli m) (Request c1) (Request c2) (Response c2) (Response c1) ->
+  RouteHandler m c2 ->
+  RouteHandler m c1
+addMiddlewareBefore middleWare withMiddleware = RouteHandler (addMiddleWare middleWare (routeFun withMiddleware))
+  where
+    addMiddleWare ::
+      (Monad m) =>
+      Bidi (Kleisli m) (Request c1) (Request c2) (Response c2) (Response c1) ->
+      (Request c2 -> m (Maybe (Response c2))) ->
+      Request c1 ->
+      m (Maybe (Response c1))
+    addMiddleWare (Bidi (Kleisli top) (Kleisli bottom)) h request =
+      top request >>= h >>= traverse bottom

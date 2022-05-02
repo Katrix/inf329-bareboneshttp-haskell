@@ -11,6 +11,7 @@ module BareBonesHttp.Http
     module BareBonesHttp.Http.RouteHandler,
     RequestMonad (..),
     RequestMonadT (..),
+    MiddleWare,
     serveFiles,
     handleServer,
     runServer,
@@ -180,7 +181,7 @@ setBodyContentLength r@(Response _ _ _ (Just body) _) =
   set (responseHeaders . ix "Content-Length") (T.pack $ show $ B.length body) r
 setBodyContentLength r = r
 
-setCorrectnessHeaders :: (RequestMonad m) => Bidi (Kleisli m) (Request c1) (Request c1) (Response c2) (Response c2)
+setCorrectnessHeaders :: (RequestMonad m) => MiddleWare m c1 c2
 setCorrectnessHeaders = Bidi (arr id) (Kleisli ensureCloseCorrect >>> Kleisli ensureBodyRead >>^ setBodyContentLength)
 
 -------------------- Server functions --------------------
@@ -280,14 +281,16 @@ contentTypeFromFileExtension _ = Nothing
 runTCPServerM :: (MonadUnliftIO m) => Maybe String -> String -> (Socket -> m ()) -> m ()
 runTCPServerM hostName port handler =
   withRunInIO $ \runInIO -> runTCPServer hostName port (runInIO . handler)
+  
+type MiddleWare m c1 c2 = Bidi (Kleisli m) (Request c1) (Request c2) (Response c2) (Response c1)
 
 runServerRoutes ::
   (MonadUnliftIO m, MonadLogger m) =>
   Maybe String ->
   String ->
   HttpAuthority ->
-  Bidi (Kleisli (RequestMonadT (MReader.ReaderT Socket m))) (Request ()) (Request c1) (Response c1) (Response ()) ->
-  RouteHandler (RequestMonadT (MReader.ReaderT Socket m)) c1 ->
+  MiddleWare (RequestMonadT (MReader.ReaderT Socket m)) () c ->
+  RouteHandler (RequestMonadT (MReader.ReaderT Socket m)) c ->
   m ()
 runServerRoutes hostName port defaultAuthority middleware handler =
   runTCPServerM
@@ -298,8 +301,8 @@ runServerRoutes hostName port defaultAuthority middleware handler =
 handleServerRoutes ::
   (MonadUnliftIO m, MonadReader Socket m, MonadLogger m) =>
   HttpAuthority ->
-  Bidi (Kleisli (RequestMonadT m)) (Request ()) (Request c1) (Response c1) (Response ()) ->
-  RouteHandler (RequestMonadT m) c1 ->
+  MiddleWare (RequestMonadT m) () c ->
+  RouteHandler (RequestMonadT m) c ->
   m ()
 handleServerRoutes defaultAuthority middleware handler =
   handleServer defaultAuthority (middleware .|| Kleisli (routeHandlerOrSimpleNotFound handler))
